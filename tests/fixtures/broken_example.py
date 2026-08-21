@@ -1,5 +1,5 @@
 # broken_example.py - smoke test fixture for AI Self-Healing Pipeline
 name = "Tony-EDWARD"
-gretting = f"Hello, {name}!"
+greeting = f"Hello, {name}!"
 # Bug: variable name typo - should be greeting not gretting
 print(greeting)
