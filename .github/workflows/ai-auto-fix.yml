@@ -155,7 +155,7 @@ jobs:
                       "error_message": "NameError: name 'greeting' is not defined. The variable 'greeting' is referenced on line 5 but never assigned. The intent was clearly to assign the value of 'gretting' (defined on line 3) to the variable 'greeting'.",
                       "file_path": "tests/fixtures/broken_example.py",
                       "line_number": 5,
-                      "code_context": "# broken_example.py — used by smoke-test for AI Self-Healing Pipeline\nname = 'Tony-EDWARD'\ngretting = f'Hello, {name}!'\n# Bug: variable name typo — should be 'greeting', not 'gretting'\nprint(greeting)",
+                      "code_context": "# broken_example.py - smoke test fixture for AI Self-Healing Pipeline\nname = \"Tony-EDWARD\"\ngretting = f\"Hello, {name}!\"\n# Bug: variable name typo - should be greeting not gretting\nprint(greeting)",
                       "repo_root": ".",
                   }
 
