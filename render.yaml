@@ -1,0 +1,91 @@
+# Render.com service definition for Tony-EDWARD v3
+# Docs: https://render.com/docs/blueprint-spec
+# Push this repo to GitHub, then in Render dashboard:
+#   New > Blueprint > select the repo. Render will read this file.
+
+services:
+  - type: web
+    name: tony-edward
+    runtime: docker
+    plan: starter            # bump to standard / pro for more CPU/RAM
+    region: oregon           # adjust to your region
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    healthCheckTimeoutSeconds: 60
+    autoDeploy: true
+
+    # 20GB persistent disk — survives redeploys. Mounted at /app/storage.
+    disk:
+      name: tony-edward-storage
+      mountPath: /app/storage
+      sizeGB: 20
+
+    envVars:
+      # --- Process ---
+      - key: PORT
+        value: "8000"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: ENVIRONMENT
+        value: production
+      - key: STORAGE_DIR
+        value: /app/storage
+      - key: AUTO_PURGE_STORAGE_LIMIT_GB
+        value: "20"
+      - key: LOG_LEVEL
+        value: INFO
+
+      # --- Super-Admin secrets (set in dashboard, encrypted at rest) ---
+      - key: ADMIN_SECRET_KEY_64
+        sync: false
+      - key: SUPER_ADMIN_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+
+      # --- LLM (Requesty router with auto-failover) ---
+      - key: PRIMARY_LLM_API_URL
+        value: https://router.requesty.ai/v1
+      - key: PRIMARY_LLM_API_KEY
+        sync: false
+      - key: PRIMARY_LLM_API_KEY_FALLBACK
+        sync: false
+      - key: PRIMARY_LLM_MODEL
+        value: nemotron-3-ultra-550b-a55b
+
+      # --- Backblaze B2 (S3-compatible, 10GB cap) ---
+      - key: B2_APPLICATION_KEY_ID
+        sync: false
+      - key: B2_APPLICATION_KEY
+        sync: false
+      - key: B2_BUCKET_NAME
+        value: tony-edward-patterns
+      - key: B2_ENDPOINT_URL
+        value: https://s3.us-east-005.backblazeb2.com
+      - key: B2_STORAGE_LIMIT_GB
+        value: "10"
+
+      # --- Render API integration ---
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
+
+      # --- 30-day Sandbox Cron ---
+      - key: SANDBOX_CRON_ENABLED
+        value: "true"
+      - key: SANDBOX_CRON_INTERVAL_DAYS
+        value: "30"
+      - key: SANDBOX_ACCURACY_THRESHOLD
+        value: "0.3"
+
+      # --- End-user rate limits + bcrypt ---
+      - key: ENDUSER_RATE_PER_MINUTE
+        value: "20"
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: ENDUSER_ALLOWED_ORIGINS
+        value: https://your-frontend.com
+      - key: ENDUSER_ALLOWED_DOMAINS
+        value: your-frontend.com

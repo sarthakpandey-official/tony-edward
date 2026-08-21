@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.env
+storage/*.sqlite3
+storage/sandbox_runs/
+storage/exports/
+tests/__pycache__/

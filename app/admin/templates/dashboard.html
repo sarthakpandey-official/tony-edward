@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tony-EDWARD · Super-Admin</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131826; --panel-2: #1a2030;
+    --text: #e7ecf3; --muted: #8a94a6;
+    --accent: #6ee7b7; --accent-2: #60a5fa;
+    --warn: #fbbf24; --danger: #f87171;
+    --border: #232a3a; --grid: #1f2638;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px; line-height: 1.5; }
+  #login { max-width: 380px; margin: 80px auto 0; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 12px; padding: 32px; }
+  #login h1 { margin: 0 0 4px 0; font-size: 20px; }
+  #login .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  #login input { width: 100%; padding: 12px 14px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; margin-bottom: 16px; }
+  #login input:focus { outline: none; border-color: var(--accent); }
+  #login button { width: 100%; padding: 12px; background: var(--accent); color: #062619;
+    border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px; }
+  #login button:hover { background: #4fd1a3; }
+  #login .err { color: var(--danger); font-size: 12px; margin-top: 12px; text-align: center; }
+  #dashboard { display: none; }
+  header { background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header .brand { display: flex; align-items: center; gap: 12px; }
+  header .brand .logo { width: 28px; height: 28px; border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; color: #062619; font-size: 13px; }
+  header .brand h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .brand .ver { color: var(--muted); font-size: 12px; }
+  header nav { display: flex; gap: 4px; }
+  header nav button { background: transparent; color: var(--muted);
+    border: 1px solid transparent; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  header nav button:hover { color: var(--text); background: var(--panel-2); }
+  header nav button.active { color: var(--accent); background: var(--panel-2); border-color: var(--border); }
+  header .actions { display: flex; gap: 8px; align-items: center; }
+  header .actions .ind { width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  header .actions .ind.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  header .logout { background: transparent; color: var(--muted);
+    border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 6px; }
+  .card .value { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .card .delta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .card.wide { grid-column: span 2; }
+  .card.full { grid-column: 1 / -1; }
+  .chart { width: 100%; height: 140px; margin-top: 8px; }
+  .chart .grid-line { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 2 4; }
+  .chart .line { fill: none; stroke: var(--accent); stroke-width: 2;
+    stroke-linejoin: round; stroke-linecap: round; }
+  .chart .area { fill: var(--accent); opacity: 0.12; }
+  .chart .label { fill: var(--muted); font-size: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  tr:hover { background: var(--panel-2); }
+  .btn { background: var(--accent); color: #062619; border: none; padding: 8px 14px;
+    border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
+  .btn:hover { background: #4fd1a3; }
+  .btn.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .btn.danger { background: var(--danger); color: #2a0a0a; }
+  .btn.warn { background: var(--warn); color: #2a1a04; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field input, .field select { background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 13px; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4); display: none; z-index: 1000; max-width: 380px; }
+  #toast.show { display: block; animation: slideIn 0.2s ease-out; }
+  #toast.ok { border-color: var(--accent); }
+  #toast.err { border-color: var(--danger); }
+  @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+    font-weight: 500; background: var(--panel-2); color: var(--muted); }
+  .badge.ok { background: rgba(110, 231, 183, 0.15); color: var(--accent); }
+  .badge.warn { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
+  .badge.err { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 24px 0 12px 0; }
+  .hidden { display: none !important; }
+  pre { background: var(--bg); padding: 12px; border-radius: 6px; overflow: auto;
+    font-size: 12px; border: 1px solid var(--border); color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>Tony-EDWARD</h1>
+  <div class="sub">Super-Admin Access · 64-character secret key required</div>
+  <form method="POST" action="/admin/login">
+    <input type="password" name="admin_key" placeholder="ADMIN_SECRET_KEY_64" autocomplete="off" autofocus>
+    <button type="submit">Authenticate</button>
+  </form>
+  <div class="err" id="login-err"></div>
+</div>
+
+<div id="dashboard">
+  <header>
+    <div class="brand">
+      <div class="logo">TE</div>
+      <div>
+        <h1>Tony-EDWARD</h1>
+        <div class="ver">v3.0 · Backblaze B2 · predictive B2B intelligence</div>
+      </div>
+    </div>
+    <nav>
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="storage">B2 Storage</button>
+      <button data-tab="patterns">Patterns</button>
+      <button data-tab="keys">End-User Keys</button>
+      <button data-tab="sandbox">Sandbox</button>
+      <button data-tab="render">Render Control</button>
+    </nav>
+    <div class="actions">
+      <span class="ind" id="status-ind" title="System health"></span>
+      <form method="POST" action="/admin/logout" style="display:inline">
+        <button type="submit" class="logout">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main>
+    <section id="tab-overview" class="tab">
+      <div class="grid">
+        <div class="card">
+          <div class="label">Pattern Count</div>
+          <div class="value" id="m-pattern-count">—</div>
+          <div class="delta" id="m-pattern-delta">local SQLite</div>
+        </div>
+        <div class="card">
+          <div class="label">Local Storage Used</div>
+          <div class="value" id="m-storage-used">— GB</div>
+          <div class="delta" id="m-storage-limit">of 20 GB</div>
+        </div>
+        <div class="card">
+          <div class="label">B2 Storage Used</div>
+          <div class="value" id="m-b2-used">— GB</div>
+          <div class="delta" id="m-b2-limit">of 10 GB</div>
+        </div>
+        <div class="card">
+          <div class="label">Memory RSS</div>
+          <div class="value" id="m-memory">— MB</div>
+          <div class="delta" id="m-uptime">uptime —</div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card wide">
+          <div class="label">Pattern Count Over Time</div>
+          <svg class="chart" id="chart-patterns" viewBox="0 0 400 140" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="card wide">
+          <div class="label">B2 Storage Growth (bytes)</div>
+          <svg class="chart" id="chart-b2" viewBox="0 0 400 140" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card full">
+          <div class="label">Backblaze B2 Storage</div>
+          <table id="t-b2">
+            <thead>
+              <tr><th>Status</th><th>Bucket</th><th>Endpoint</th><th>Region</th><th>Objects</th><th>Size (GB)</th><th>Limit (GB)</th><th>Headroom (GB)</th></tr>
+            </thead>
+            <tbody><tr><td colspan="8">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-storage" class="tab hidden">
+      <div class="section-title">Storage Layers</div>
+      <div class="grid">
+        <div class="card">
+          <div class="label">Backblaze B2</div>
+          <div class="value" id="s-b2-status">—</div>
+          <div class="delta" id="s-b2-detail">—</div>
+        </div>
+        <div class="card">
+          <div class="label">Local SQLite</div>
+          <div class="value" id="s-local-size">—</div>
+          <div class="delta" id="s-local-path">—</div>
+        </div>
+      </div>
+      <div class="section-title">B2 Operations</div>
+      <div class="card">
+        <p style="color: var(--muted); font-size: 13px;">
+          Patterns stream to B2 as JSONL files (daily-rolled) AND as dedicated per-pattern objects
+          for fine-grained deletion. The 30-day sandbox loop prunes low-accuracy patterns from
+          both layers.
+        </p>
+        <button class="btn" id="btn-b2-backup" style="margin-top:12px">Backup Pattern DB to B2</button>
+        <button class="btn warn" id="btn-b2-prune" style="margin-left:8px">Prune Oldest 10% B2 Objects</button>
+        <button class="btn secondary" id="btn-vacuum" style="margin-left:8px">Vacuum SQLite</button>
+      </div>
+    </section>
+
+    <section id="tab-patterns" class="tab hidden">
+      <div class="section-title">Recent Patterns (no raw text stored)</div>
+      <div class="card">
+        <table id="t-patterns">
+          <thead>
+            <tr><th>ID</th><th>Source</th><th>Task</th><th>Novelty</th><th>Accuracy</th><th>B2 Object Key</th><th>Created</th></tr>
+          </thead>
+          <tbody><tr><td colspan="7">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-keys" class="tab hidden">
+      <div class="section-title">Create New End-User API Key</div>
+      <div class="card">
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <div class="field"><label>Label</label><input type="text" id="k-label" placeholder="client name"></div>
+          <div class="field"><label>Allowed Domains (comma-separated)</label><input type="text" id="k-domains" placeholder="example.com"></div>
+          <div class="field"><label>Rate per minute</label><input type="number" id="k-rate" value="20" min="1" max="10000"></div>
+        </div>
+        <button class="btn" id="btn-create-key">Create Key</button>
+      </div>
+      <div class="section-title">Active Keys</div>
+      <div class="card">
+        <table id="t-keys">
+          <thead>
+            <tr><th>Key ID</th><th>Label</th><th>Domains</th><th>Rate</th><th>Used</th><th>Last Used</th><th>Actions</th></tr>
+          </thead>
+          <tbody><tr><td colspan="7">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-sandbox" class="tab hidden">
+      <div class="section-title">30-Day Sandbox Back-Testing Loop</div>
+      <div class="grid">
+        <div class="card"><div class="label">Status</div><div class="value" id="sb-status">—</div></div>
+        <div class="card"><div class="label">Last Run</div><div class="value" id="sb-last">never</div></div>
+        <div class="card"><div class="label">Next Scheduled Run</div><div class="value" id="sb-next">—</div></div>
+        <div class="card"><div class="label">Accuracy Threshold</div><div class="value" id="sb-threshold">—</div></div>
+      </div>
+      <div class="card">
+        <p style="color: var(--muted); font-size: 13px;">
+          The sandbox loop evaluates each pattern's accuracy via a deterministic lexicon + risk
+          scorer. Patterns scoring below the threshold are pruned from local SQLite AND Backblaze B2
+          (dedicated objects deleted + daily JSONL files rewritten). Runs every 30 days automatically.
+        </p>
+        <button class="btn warn" id="btn-sandbox-run" style="margin-top:12px">Trigger Sandbox Pass Now</button>
+      </div>
+      <div class="section-title">Run History</div>
+      <div class="card">
+        <table id="t-sandbox-history">
+          <thead>
+            <tr><th>Run At</th><th>Duration</th><th>Evaluated</th><th>Pruned Local</th><th>Pruned B2 Objects</th><th>Pruned B2 Lines</th><th>Avg Acc. After</th></tr>
+          </thead>
+          <tbody><tr><td colspan="7">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-render" class="tab hidden">
+      <div class="section-title">Render Service</div>
+      <div class="card">
+        <div id="render-info" style="margin-bottom:16px;"><pre>Click "Refresh Service Info" to load.</pre></div>
+        <button class="btn secondary" id="btn-render-refresh">Refresh Service Info</button>
+      </div>
+      <div class="section-title">Service Controls</div>
+      <div class="card">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div>
+            <div class="field"><label>Scale to plan</label>
+              <select id="render-plan">
+                <option value="starter">starter</option>
+                <option value="standard">standard</option>
+                <option value="pro">pro</option>
+                <option value="pro_plus">pro_plus</option>
+                <option value="enterprise">enterprise</option>
+              </select>
+            </div>
+            <button class="btn" id="btn-render-scale">Scale Service</button>
+          </div>
+          <div>
+            <div class="field"><label>Restart service</label>
+              <input type="text" value="Triggers immediate deploy restart" disabled>
+            </div>
+            <button class="btn danger" id="btn-render-restart">Restart Service</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const AUTHED = __AUTHENTICATED__ === "true";
+if (AUTHED) {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("dashboard").style.display = "block";
+} else {
+  if (location.search.includes("error=invalid_key")) {
+    document.getElementById("login-err").textContent = "Invalid admin key. Please try again.";
+  }
+}
+
+document.querySelectorAll("header nav button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("header nav button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll(".tab").forEach(t => t.classList.add("hidden"));
+    document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
+  });
+});
+
+function toast(msg, ok = true) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "show " + (ok ? "ok" : "err");
+  setTimeout(() => el.className = "", 3500);
+}
+
+const PATTERNS_HISTORY = new Array(60).fill(0);
+const B2_HISTORY = new Array(60).fill(0);
+let lastPatternCount = 0;
+
+async function fetchMetrics() {
+  try {
+    const r = await fetch("/admin/api/metrics");
+    if (r.status === 401) { location.href = "/admin/"; return; }
+    const m = await r.json();
+    document.getElementById("m-pattern-count").textContent = m.patterns.total_patterns.toLocaleString();
+    document.getElementById("m-pattern-delta").textContent =
+      `${Object.keys(m.patterns.by_source || {}).length} sources · avg novelty ${(m.patterns.avg_novelty || 0).toFixed(3)}`;
+    document.getElementById("m-storage-used").textContent = m.storage.used_gb.toFixed(3) + " GB";
+    document.getElementById("m-storage-limit").textContent = "of " + m.storage.limit_gb + " GB";
+    document.getElementById("m-b2-used").textContent = (m.b2.estimated_size_gb || 0).toFixed(4) + " GB";
+    document.getElementById("m-b2-limit").textContent = "of " + m.b2.limit_gb + " GB";
+    document.getElementById("m-memory").textContent = m.process.memory_mb.toFixed(1) + " MB";
+    const upH = Math.floor(m.process.uptime_sec / 3600);
+    const upM = Math.floor((m.process.uptime_sec % 3600) / 60);
+    document.getElementById("m-uptime").textContent = `uptime ${upH}h ${upM}m`;
+    PATTERNS_HISTORY.push(m.patterns.total_patterns); PATTERNS_HISTORY.shift();
+    B2_HISTORY.push(m.b2.total_size_bytes || 0); B2_HISTORY.shift();
+    lastPatternCount = m.patterns.total_patterns;
+    drawPatternsChart();
+    drawB2Chart();
+    updateB2Table(m.b2);
+    updateStorageTab(m);
+    const ind = document.getElementById("status-ind");
+    ind.className = "ind";
+    if (m.b2.estimated_size_gb > m.b2.limit_gb * 0.9) ind.className = "ind warn";
+  } catch (e) { console.error(e); }
+}
+
+function drawPatternsChart() {
+  const svg = document.getElementById("chart-patterns");
+  const w = 400, h = 140, pad = 4;
+  const data = PATTERNS_HISTORY;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = Math.max(1, max - min);
+  const step = (w - pad * 2) / (data.length - 1);
+  const pts = data.map((v, i) => [pad + i * step, h - pad - ((v - min) / range) * (h - pad * 2 - 10)]);
+  const path = "M" + pts.map(p => p.join(",")).join(" L");
+  svg.innerHTML = `
+    <line class="grid-line" x1="0" y1="${h * 0.5}" x2="${w}" y2="${h * 0.5}" />
+    <path class="line" d="${path}" style="stroke: var(--accent-2)" />
+    <text class="label" x="4" y="12">now ${max.toLocaleString()}</text>
+    <text class="label" x="4" y="${h - 4}">min ${min.toLocaleString()}</text>
+  `;
+}
+
+function drawB2Chart() {
+  const svg = document.getElementById("chart-b2");
+  const w = 400, h = 140, pad = 4;
+  const data = B2_HISTORY;
+  const max = Math.max(1, ...data);
+  const step = (w - pad * 2) / (data.length - 1);
+  const pts = data.map((v, i) => [pad + i * step, h - pad - (v / max) * (h - pad * 2 - 10)]);
+  const path = "M" + pts.map(p => p.join(",")).join(" L");
+  const area = path + ` L${pad + (data.length - 1) * step},${h - pad} L${pad},${h - pad} Z`;
+  svg.innerHTML = `
+    <line class="grid-line" x1="0" y1="${h * 0.5}" x2="${w}" y2="${h * 0.5}" />
+    <path class="area" d="${area}" />
+    <path class="line" d="${path}" />
+    <text class="label" x="4" y="12">max ${(max / 1024 / 1024).toFixed(2)} MB</text>
+  `;
+}
+
+function updateB2Table(b2) {
+  const tbody = document.querySelector("#t-b2 tbody");
+  tbody.innerHTML = `
+    <tr>
+      <td><span class="badge ${b2.configured ? 'ok' : 'err'}">${b2.configured ? 'connected' : 'disabled'}</span></td>
+      <td class="mono">${b2.bucket || '—'}</td>
+      <td class="mono">${b2.endpoint || '—'}</td>
+      <td>${b2.region || '—'}</td>
+      <td>${(b2.object_count || 0).toLocaleString()}</td>
+      <td>${(b2.estimated_size_gb || 0).toFixed(4)}</td>
+      <td>${b2.limit_gb}</td>
+      <td>${(b2.headroom_gb || 0).toFixed(4)}</td>
+    </tr>
+  `;
+}
+
+function updateStorageTab(m) {
+  const b2 = m.b2;
+  document.getElementById("s-b2-status").innerHTML = b2.configured ? '<span class="badge ok">connected</span>' : '<span class="badge err">disabled</span>';
+  document.getElementById("s-b2-detail").textContent = `${b2.object_count} objects · ${(b2.estimated_size_gb || 0).toFixed(4)} GB`;
+  document.getElementById("s-local-size").textContent = m.storage.pattern_db_size_bytes.toLocaleString() + " B";
+  const sb = m.sandbox;
+  document.getElementById("sb-status").textContent = sb.running ? "running" : "idle";
+  document.getElementById("sb-last").textContent = sb.last_run ? new Date(sb.last_run * 1000).toLocaleString() : "never";
+  document.getElementById("sb-next").textContent = sb.next_run ? new Date(sb.next_run * 1000).toLocaleString() : "—";
+  document.getElementById("sb-threshold").textContent = sb.accuracy_threshold;
+}
+
+async function loadPatterns() {
+  try {
+    const r = await fetch("/admin/api/patterns?limit=20");
+    const data = await r.json();
+    const tbody = document.querySelector("#t-patterns tbody");
+    if (!data.patterns || data.patterns.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted);">No patterns yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.patterns.map(p => `
+      <tr>
+        <td class="mono">${p.id}</td>
+        <td>${p.source}</td>
+        <td>${p.task}</td>
+        <td>${(p.novelty_score || 0).toFixed(3)}</td>
+        <td>${(p.accuracy_score || 0).toFixed(3)}</td>
+        <td class="mono">${p.b2_object_key ? p.b2_object_key.substring(0, 30) + '…' : '—'}</td>
+        <td>${new Date(p.created_at * 1000).toLocaleString()}</td>
+      </tr>
+    `).join("");
+  } catch (e) { console.error(e); }
+}
+
+async function loadKeys() {
+  try {
+    const r = await fetch("/admin/api/keys");
+    const data = await r.json();
+    const tbody = document.querySelector("#t-keys tbody");
+    if (!data.keys || data.keys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted);">No end-user keys yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.keys.map(k => `
+      <tr>
+        <td class="mono">${k.key_id}</td>
+        <td>${k.label || '—'}</td>
+        <td>${(k.allowed_domains || []).join(', ') || '—'}</td>
+        <td>${k.rate_per_minute}/min</td>
+        <td>${k.use_count}</td>
+        <td>${k.last_used_at ? new Date(k.last_used_at * 1000).toLocaleString() : 'never'}</td>
+        <td><button class="btn danger" data-revoke="${k.key_id}" style="padding: 4px 10px; font-size: 12px;">Revoke</button></td>
+      </tr>
+    `).join("");
+    document.querySelectorAll("[data-revoke]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Revoke this key?")) return;
+        const r = await fetch("/admin/api/keys/" + btn.dataset.revoke, { method: "DELETE" });
+        if (r.ok) { toast("Key revoked"); loadKeys(); } else { toast("Revoke failed", false); }
+      });
+    });
+  } catch (e) { console.error(e); }
+}
+
+document.getElementById("btn-create-key")?.addEventListener("click", async () => {
+  const label = document.getElementById("k-label").value.trim();
+  const domains = document.getElementById("k-domains").value.split(",").map(s => s.trim()).filter(Boolean);
+  const rate = parseInt(document.getElementById("k-rate").value, 10);
+  if (!label) { toast("Label required", false); return; }
+  const r = await fetch("/admin/api/keys", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label, allowed_domains: domains, rate_per_minute: rate }),
+  });
+  const data = await r.json();
+  if (r.ok && data.raw_token) {
+    prompt("Copy this token NOW. It will not be shown again:", data.raw_token);
+    toast("Key created"); loadKeys();
+  } else { toast(data.detail || "Create failed", false); }
+});
+
+async function loadSandboxHistory() {
+  try {
+    const r = await fetch("/admin/api/sandbox/history?limit=20");
+    const data = await r.json();
+    const tbody = document.querySelector("#t-sandbox-history tbody");
+    if (!data.runs || data.runs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color: var(--muted);">No sandbox runs yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.runs.map(run => `
+      <tr>
+        <td>${new Date(run.started_at * 1000).toLocaleString()}</td>
+        <td>${(run.duration_sec || 0).toFixed(1)}s</td>
+        <td>${run.patterns_evaluated || 0}</td>
+        <td>${run.patterns_pruned_local || 0}</td>
+        <td>${run.patterns_pruned_b2_objects || 0}</td>
+        <td>${run.patterns_pruned_b2_lines || 0}</td>
+        <td>${((run.avg_accuracy_after || 0)).toFixed(3)}</td>
+      </tr>
+    `).join("");
+  } catch (e) { console.error(e); }
+}
+
+document.getElementById("btn-sandbox-run")?.addEventListener("click", async () => {
+  if (!confirm("Trigger a sandbox pass NOW?")) return;
+  const btn = document.getElementById("btn-sandbox-run");
+  btn.disabled = true; btn.textContent = "Running…";
+  try {
+    const r = await fetch("/admin/api/sandbox/run", { method: "POST" });
+    const data = await r.json();
+    if (r.ok) {
+      toast(`Evaluated ${data.patterns_evaluated}, pruned ${data.patterns_pruned_local} local + ${data.patterns_pruned_b2_objects} B2 objects`);
+      loadSandboxHistory();
+    } else { toast(data.detail || "Sandbox failed", false); }
+  } catch (e) { toast("Sandbox failed: " + e.message, false); }
+  finally { btn.disabled = false; btn.textContent = "Trigger Sandbox Pass Now"; }
+});
+
+document.getElementById("btn-render-refresh")?.addEventListener("click", async () => {
+  const info = document.getElementById("render-info");
+  info.innerHTML = "<pre>Loading…</pre>";
+  try {
+    const r = await fetch("/admin/api/render/service");
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      const s = data.service || {};
+      info.innerHTML = `
+        <table>
+          <tr><th>Service ID</th><td class="mono">${s.id || '—'}</td></tr>
+          <tr><th>Name</th><td>${s.name || '—'}</td></tr>
+          <tr><th>Status</th><td><span class="badge ${s.status === 'live' ? 'ok' : 'warn'}">${s.status || '—'}</span></td></tr>
+          <tr><th>Plan</th><td>${(s.plan || '—')}</td></tr>
+          <tr><th>Type</th><td>${s.type || '—'}</td></tr>
+          <tr><th>Region</th><td>${s.region || '—'}</td></tr>
+          <tr><th>Created</th><td>${s.createdAt ? new Date(s.createdAt).toLocaleString() : '—'}</td></tr>
+        </table>`;
+    } else {
+      info.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+    }
+  } catch (e) { info.innerHTML = `<pre>error: ${e.message}</pre>`; }
+});
+
+document.getElementById("btn-render-restart")?.addEventListener("click", async () => {
+  if (!confirm("Restart the Render service NOW?")) return;
+  const r = await fetch("/admin/api/render/restart", { method: "POST" });
+  const data = await r.json();
+  if (r.ok && data.ok) toast("Restart triggered — service will be back in ~30s");
+  else toast(data.error || "Restart failed", false);
+});
+
+document.getElementById("btn-render-scale")?.addEventListener("click", async () => {
+  const plan = document.getElementById("render-plan").value;
+  if (!confirm(`Scale service to plan "${plan}"?`)) return;
+  const r = await fetch(`/admin/api/render/scale?plan=${encodeURIComponent(plan)}`, { method: "POST" });
+  const data = await r.json();
+  if (r.ok && data.ok) toast(`Scaling to ${plan}`);
+  else toast(data.error || "Scale failed", false);
+});
+
+document.getElementById("btn-b2-backup")?.addEventListener("click", async () => {
+  toast("Backing up…");
+  const r = await fetch("/admin/api/b2/backup", { method: "POST" });
+  const data = await r.json();
+  if (r.ok && data.ok) toast(`Backup OK: ${data.size_bytes} bytes`);
+  else toast(data.error || "Backup failed", false);
+});
+
+document.getElementById("btn-b2-prune")?.addEventListener("click", async () => {
+  if (!confirm("Prune oldest 10% of B2 pattern objects?")) return;
+  const r = await fetch("/admin/api/b2/prune?fraction=0.1", { method: "POST" });
+  const data = await r.json();
+  if (r.ok) toast(`Pruned ${data.deleted} B2 objects`);
+  else toast(data.error || "Prune failed", false);
+});
+
+document.getElementById("btn-vacuum")?.addEventListener("click", async () => {
+  toast("Vacuuming…");
+  const r = await fetch("/v1/admin/vacuum", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + (getCookie("tedw_admin") || "") },
+  });
+  if (!r.ok) { toast("Vacuum failed (auth)", false); return; }
+  const data = await r.json();
+  if (r.ok) toast(`Reclaimed ${data.reclaimed_bytes} bytes`);
+  else toast("Vacuum failed", false);
+});
+
+function getCookie(name) {
+  const m = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return m ? m[2] : "";
+}
+
+if (AUTHED) {
+  fetchMetrics();
+  setInterval(fetchMetrics, 5000);
+  loadPatterns();
+  setInterval(loadPatterns, 15000);
+  loadKeys();
+  loadSandboxHistory();
+}
+</script>
+</body>
+</html>

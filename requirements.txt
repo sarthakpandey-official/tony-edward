@@ -1,0 +1,40 @@
+# =============================================================================
+# Tony-EDWARD v3 — Python dependencies
+# =============================================================================
+
+# --- Web framework ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# --- Async HTTP + Browser automation ---
+httpx[http2]>=0.27.0
+playwright>=1.40.0
+
+# --- Data / Math ---
+numpy>=1.26.0
+
+# --- Backblaze B2 (S3-compatible storage) ---
+boto3>=1.34.0
+
+# --- bcrypt for end-user API key hashing ---
+bcrypt>=4.1.0
+
+# --- Async task queue (configured for future use; not yet wired) ---
+redis>=5.0.0
+celery>=5.3.0
+
+# --- Original Agent-Reach deps (vendored library still uses these) ---
+requests>=2.28
+feedparser>=6.0
+loguru>=0.7
+pyyaml>=6.0
+rich>=13.0
+yt-dlp[default]>=2026.07.04
+
+# --- Dev / Test ---
+pytest>=8.0
+pytest-asyncio>=0.23.0
