@@ -145,16 +145,18 @@ jobs:
                   failure = json.loads(open(error_file).read())
                   failure.setdefault("issue_id", issue_id)
               else:
-                  # Smoke test scenario — synthesize a trivial "bug" so the LLM has something to fix.
-                  # The fix should add a missing docstring to a clearly-marked function.
-                  # This is a no-op patch that proves the pipeline end-to-end works.
+                  # Smoke test scenario — a real, fixable bug.
+                  # We have a test fixture file at tests/fixtures/broken_example.py
+                  # that contains a deliberate NameError. The LLM should add the
+                  # missing variable assignment to fix it.
                   failure = {
                       "issue_id": issue_id,
-                      "stack_trace": "Traceback (most recent call last):\n  File \"app/__init__.py\", line 4, in <module>\n    raise ImportError(\"Module __init__.py is missing module docstring\")\nImportError: Module __init__.py is missing module docstring",
-                      "error_message": "ImportError: Module __init__.py is missing module docstring",
-                      "file_path": "app/__init__.py",
-                      "line_number": 1,
-                      "code_context": "\"\"\"Tony-EDWARD — predictive B2B intelligence system on Render.com.\"\"\"\n\n__version__ = \"3.0.0\"\n__all__ = [\"__version__\"]",
+                      "stack_trace": "Traceback (most recent call last):\n  File \"tests/fixtures/broken_example.py\", line 5, in <module>\n    print(greeting)\nNameError: name 'greeting' is not defined. Did you mean: 'gretting'?",
+                      "error_message": "NameError: name 'greeting' is not defined. The variable 'greeting' is referenced on line 5 but never assigned. The intent was clearly to assign the value of 'gretting' (defined on line 3) to the variable 'greeting'.",
+                      "file_path": "tests/fixtures/broken_example.py",
+                      "line_number": 5,
+                      "code_context": "# broken_example.py — used by smoke-test for AI Self-Healing Pipeline\nname = 'Tony-EDWARD'\ngretting = f'Hello, {name}!'\n# Bug: variable name typo — should be 'greeting', not 'gretting'\nprint(greeting)",
+                      "repo_root": ".",
                   }
 
           elif event_name == "workflow_run":
