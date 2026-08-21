@@ -115,9 +115,12 @@ async def test_sandbox_run_with_no_patterns_returns_skipped():
     from app.engine.sandbox_cron import run_sandbox_pass
     from app.core.config import get_settings
     settings = get_settings()
-    settings.__dict__["pattern_db_path"] = "/tmp/tony-edward-test/sandbox_empty.sqlite3"
+    # Use the configured storage dir, not a hardcoded path
+    test_db = os.path.join(settings.storage_dir, "sandbox_empty.sqlite3")
+    settings.__dict__["pattern_db_path"] = test_db
     if os.path.exists(settings.pattern_db_path):
         os.remove(settings.pattern_db_path)
+    os.makedirs(os.path.dirname(settings.pattern_db_path), exist_ok=True)
     report = await run_sandbox_pass(settings)
     assert report.error is not None
     assert "insufficient_patterns" in report.error
@@ -131,9 +134,12 @@ async def test_sandbox_run_evaluates_labeled_patterns():
     from app.storage.pattern_db_cache import ensure_schema
     from app.core.config import get_settings
     settings = get_settings()
-    settings.__dict__["pattern_db_path"] = "/tmp/tony-edward-test/sandbox_eval.sqlite3"
+    # Use the configured storage dir
+    test_db = os.path.join(settings.storage_dir, "sandbox_eval.sqlite3")
+    settings.__dict__["pattern_db_path"] = test_db
     if os.path.exists(settings.pattern_db_path):
         os.remove(settings.pattern_db_path)
+    os.makedirs(os.path.dirname(settings.pattern_db_path), exist_ok=True)
     ensure_schema(settings)
     conn = sqlite3.connect(settings.pattern_db_path)
     now = time.time()
