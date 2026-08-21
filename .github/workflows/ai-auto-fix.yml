@@ -436,7 +436,7 @@ jobs:
           SANDBOX_CRON_ENABLED: 'false'
         run: |
           # pytest -v --env=production equivalent — run full suite with ENVIRONMENT=production
-          pytest -v --tb=short --maxfail=3 tests/ && EXIT=0 || EXIT=$?
+          pytest -v --tb=short --maxfail=5 tests/ && EXIT=0 || EXIT=$?
           echo "exit_code=$EXIT" >> $GITHUB_OUTPUT
           if [ $EXIT -ne 0 ]; then
             echo "::error::Post-merge verification FAILED — triggering rollback"
@@ -490,10 +490,16 @@ jobs:
           ISSUE_ID: ${{ needs.generate-hotfix.outputs.issue_id }}
         run: |
           echo "Rolling back from $CURRENT_SHA to $PREV_SHA"
-          # Use git revert (creates a new commit that undoes the merge)
-          git revert --no-edit "$CURRENT_SHA"
-          # Push the revert
-          git push origin main
+          # Use git revert with -m 1 (revert a merge commit, keeping mainline parent)
+          # If revert fails (not a merge), try a hard reset to previous stable
+          if git revert --no-edit -m 1 "$CURRENT_SHA" 2>/dev/null; then
+            echo "Revert succeeded via 'git revert -m 1'"
+          else
+            echo "git revert failed — falling back to hard reset"
+            git reset --hard "$PREV_SHA"
+          fi
+          # Push the revert/reset
+          git push origin main --force-with-lease
           echo "Reverted commit $CURRENT_SHA — main is now back at stable state"
 
       - name: Trigger secondary LLM hotfix cycle
