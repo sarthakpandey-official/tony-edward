@@ -93,6 +93,7 @@ class CreateKeyRequest(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     allowed_origins: list[str] = Field(default_factory=list)
     rate_per_minute: int = Field(20, ge=1, le=10_000)
+    tier: str = Field("limited", description="limited | unlimited")
 
 
 class ScaleRequest(BaseModel):
@@ -241,14 +242,17 @@ async def create_enduser_key(
             allowed_domains=req.allowed_domains,
             allowed_origins=req.allowed_origins,
             rate_per_minute=req.rate_per_minute,
+            tier=req.tier,
             settings=settings,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {
         "raw_token": raw_token, "key_id": entry.key_id, "label": entry.label,
         "allowed_domains": entry.allowed_domains, "allowed_origins": entry.allowed_origins,
         "rate_per_minute": entry.rate_per_minute,
+        "tier": entry.tier,
+        "is_unlimited": entry.is_unlimited,
         "warning": "Save this token now. It will not be retrievable again.",
     }
 

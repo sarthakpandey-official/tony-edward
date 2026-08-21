@@ -259,12 +259,14 @@ async def api_keys_create(request: Request) -> dict:
             allowed_domains=body.get("allowed_domains", []),
             allowed_origins=body.get("allowed_origins", []),
             rate_per_minute=int(body.get("rate_per_minute", 20)),
+            tier=body.get("tier", "limited"),
             settings=settings,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {
         "raw_token": raw_token, "key_id": entry.key_id,
+        "tier": entry.tier, "is_unlimited": entry.is_unlimited,
         "warning": "Save this token now. It will not be retrievable again.",
     }
 

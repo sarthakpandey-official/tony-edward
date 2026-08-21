@@ -49,6 +49,8 @@ class AuthContext:
     byo_api_url: Optional[str]
     is_admin: bool
     enduser_key_id: Optional[str] = None
+    enduser_tier: str = "limited"   # limited | unlimited
+    enduser_is_unlimited: bool = False
 
     @property
     def llm_api_key(self) -> str:
@@ -145,7 +147,10 @@ def build_auth_context(
     byo_api_key: Optional[str],
     byo_api_url: Optional[str],
 ) -> AuthContext:
-    """Build AuthContext, applying role rules + end-user rate limit."""
+    """Build AuthContext, applying role rules + end-user rate limit.
+
+    Unlimited-tier end-users skip rate limits (no throttling).
+    """
     origin = request.headers.get("origin")
     host = request.headers.get("host")
     role = resolve_role(settings, authorization, origin=origin, host=host)
@@ -158,19 +163,28 @@ def build_auth_context(
             byo_api_key=None,
             byo_api_url=None,
             is_admin=True,
+            enduser_tier="unlimited",
+            enduser_is_unlimited=True,
         )
 
     enduser_entry = getattr(_thread_local, "enduser_entry", None)
     enduser_key_id = None
+    enduser_tier = "limited"
+    is_unlimited = False
     rate_per_minute = settings.enduser_rate_per_minute
     if enduser_entry is not None:
         enduser_key_id = enduser_entry.key_id
-        rate_per_minute = enduser_entry.rate_per_minute or settings.enduser_rate_per_minute
+        enduser_tier = enduser_entry.tier
+        is_unlimited = enduser_entry.is_unlimited
+        if not is_unlimited:
+            rate_per_minute = enduser_entry.rate_per_minute or settings.enduser_rate_per_minute
         _thread_local.enduser_entry = None
 
-    client_host = (request.client.host if request.client else "unknown") or "unknown"
-    fp = enduser_key_id or _user_fingerprint(byo_api_key, byo_api_url, client_host)
-    _check_rate_limit(settings, fp, rate_per_minute)
+    # Skip rate limit entirely for unlimited tier
+    if not is_unlimited:
+        client_host = (request.client.host if request.client else "unknown") or "unknown"
+        fp = enduser_key_id or _user_fingerprint(byo_api_key, byo_api_url, client_host)
+        _check_rate_limit(settings, fp, rate_per_minute)
 
     return AuthContext(
         role=role,
@@ -179,6 +193,8 @@ def build_auth_context(
         byo_api_url=byo_api_url,
         is_admin=False,
         enduser_key_id=enduser_key_id,
+        enduser_tier=enduser_tier,
+        enduser_is_unlimited=is_unlimited,
     )
 
 

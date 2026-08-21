@@ -46,6 +46,11 @@ except ImportError:
     logger.warning("bcrypt_not_installed — end-user auth disabled")
 
 
+# Tier system: 'limited' applies default rate limits + sandbox restrictions.
+# 'unlimited' = no rate limits, no sandbox — full unrestricted access (admin-trusted).
+VALID_TIERS = ("limited", "unlimited")
+
+
 @dataclass
 class EndUserKey:
     key_id: str
@@ -58,6 +63,11 @@ class EndUserKey:
     use_count: int = 0
     active: bool = True
     label: str = ""
+    tier: str = "limited"    # limited | unlimited
+
+    @property
+    def is_unlimited(self) -> bool:
+        return self.tier == "unlimited"
 
 
 _registry_lock = threading.Lock()
@@ -104,16 +114,22 @@ def create_key(
     allowed_domains: Optional[list[str]] = None,
     allowed_origins: Optional[list[str]] = None,
     rate_per_minute: int = 20,
+    tier: str = "limited",
     settings: Optional[Settings] = None,
 ) -> tuple[str, EndUserKey]:
     """Generate a new end-user API key. Returns (raw_token, EndUserKey).
 
     The raw_token is shown to the operator ONCE for transmission to the
     end-user. We do NOT persist it — only the bcrypt hash.
+
+    tier='limited'   → default rate limits apply (rate_per_minute)
+    tier='unlimited' → no rate limits, no sandbox restrictions (full access)
     """
     settings = settings or get_settings()
     if not _HAS_BCRYPT:
         raise RuntimeError("bcrypt_not_installed")
+    if tier not in VALID_TIERS:
+        raise ValueError(f"invalid_tier: {tier}; must be one of {VALID_TIERS}")
 
     raw_token = "tedw_uk_" + secrets.token_urlsafe(32)
     key_id = _key_id_for_token(raw_token)
@@ -128,6 +144,7 @@ def create_key(
         rate_per_minute=rate_per_minute,
         created_at=time.time(),
         label=label,
+        tier=tier,
     )
     with _registry_lock:
         reg = _load_registry(settings)
@@ -164,6 +181,8 @@ def list_keys(settings: Optional[Settings] = None) -> list[dict]:
             "use_count": k.use_count,
             "active": k.active,
             "label": k.label,
+            "tier": k.tier,
+            "is_unlimited": k.is_unlimited,
         }
         for k in reg.values()
     ]
