@@ -58,29 +58,49 @@ _FAILOVER_STATUSES = {401, 402, 403, 429}
 
 
 def _call_llm(messages: list[dict], api_key: str) -> tuple[Optional[str], int, Optional[str]]:
-    """Call LLM with one key. Returns (text, status_code, error)."""
-    try:
-        with httpx.Client(timeout=httpx.Timeout(LLM_TIMEOUT, connect=30.0, read=LLM_TIMEOUT, write=60.0)) as client:
-            resp = client.post(
-                f"{LLM_API_URL.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": LLM_MODEL,
-                    "messages": messages,
-                    "temperature": 0.0,  # deterministic for code patches
-                    "max_tokens": 4000,
-                },
-            )
-        if resp.status_code >= 400:
-            return None, resp.status_code, f"HTTP {resp.status_code}: {resp.text[:200]}"
-        data = resp.json()
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return text, resp.status_code, None
-    except httpx.HTTPError as exc:
-        return None, 0, f"{type(exc).__name__}: {exc}"
+    """Call LLM with one key. Returns (text, status_code, error).
+
+    Retries up to 3 times on transient network errors (RemoteProtocolError,
+    ReadTimeout, ConnectError) before giving up.
+    """
+    import time as _time
+    transient_errors = ("RemoteProtocolError", "ReadTimeout", "ConnectError",
+                        "ReadError", "ConnectionClosed", "PoolTimeout")
+    last_err: Optional[str] = None
+    last_status: int = 0
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=httpx.Timeout(LLM_TIMEOUT, connect=30.0, read=LLM_TIMEOUT, write=60.0)) as client:
+                resp = client.post(
+                    f"{LLM_API_URL.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": LLM_MODEL,
+                        "messages": messages,
+                        "temperature": 0.0,
+                        "max_tokens": 4000,
+                    },
+                )
+            if resp.status_code >= 400:
+                return None, resp.status_code, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            data = resp.json()
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return text, resp.status_code, None
+        except httpx.HTTPError as exc:
+            err_name = type(exc).__name__
+            last_err = f"{err_name}: {exc}"
+            last_status = 0
+            # Retry on transient errors
+            if any(te in err_name for te in transient_errors) and attempt < 2:
+                wait_sec = 5 * (attempt + 1)
+                print(f"[hotfix] {err_name} on attempt {attempt+1}/3 — waiting {wait_sec}s before retry", file=sys.stderr)
+                _time.sleep(wait_sec)
+                continue
+            return None, 0, f"{err_name}: {exc}"
+    return None, last_status, last_err or "all_retries_failed"
 
 
 def call_llm_with_failover(messages: list[dict]) -> tuple[Optional[str], Optional[str]]:

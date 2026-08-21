@@ -116,7 +116,6 @@ jobs:
               # Sentry webhook payload
               payload = json.loads(os.environ.get("CLIENT_PAYLOAD") or "{}")
               issue_id = payload.get("issue_id") or payload.get("id") or f"sentry-{int(time.time())}"
-              # Sentry sends event data
               sentry_event = payload.get("event") or payload.get("data", {}).get("event") or payload
               failure = {
                   "issue_id": issue_id,
@@ -126,7 +125,6 @@ jobs:
                   "line_number": 0,
                   "code_context": "",
               }
-              # Try to extract file + line from stacktrace
               try:
                   frames = sentry_event["exception"]["values"][0]["stacktrace"]["frames"]
                   if frames:
@@ -143,13 +141,20 @@ jobs:
                   failure = json.loads(open(error_file).read())
                   failure.setdefault("issue_id", issue_id)
               else:
-                  failure = {"issue_id": issue_id, "stack_trace": "manual trigger", "error_message": "manual trigger"}
+                  # Smoke test scenario — synthesize a trivial "bug" so the LLM has something to fix.
+                  # The fix should add a missing docstring to a clearly-marked function.
+                  # This is a no-op patch that proves the pipeline end-to-end works.
+                  failure = {
+                      "issue_id": issue_id,
+                      "stack_trace": "Traceback (most recent call last):\n  File \"app/__init__.py\", line 4, in <module>\n    raise ImportError(\"Module __init__.py is missing module docstring\")\nImportError: Module __init__.py is missing module docstring",
+                      "error_message": "ImportError: Module __init__.py is missing module docstring",
+                      "file_path": "app/__init__.py",
+                      "line_number": 1,
+                      "code_context": "\"\"\"Tony-EDWARD — predictive B2B intelligence system on Render.com.\"\"\"\n\n__version__ = \"3.0.0\"\n__all__ = [\"__version__\"]",
+                  }
 
           elif event_name == "workflow_run":
-              # CI test failure — fetch logs and find the failure
               issue_id = f"ci-fail-{os.environ.get('WORKFLOW_RUN_ID', int(time.time()))}"
-              # Download the workflow run's logs (requires GitHub API)
-              token = os.environ.get("GITHUB_TOKEN", "")
               run_id = os.environ.get("WORKFLOW_RUN_ID")
               failure = {
                   "issue_id": issue_id,
@@ -159,17 +164,6 @@ jobs:
                   "line_number": 0,
                   "code_context": "",
               }
-              # Attempt to fetch logs and extract the first failure
-              if token and run_id:
-                  try:
-                      req = urllib.request.Request(
-                          f"https://api.github.com/repos/${{ github.repository }}/actions/runs/{run_id}/logs",
-                          headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
-                      )
-                      # Note: logs come as a zip — we'd need to extract
-                      # For simplicity, we just store the URL and let the LLM look at it
-                  except Exception:
-                      pass
 
           # Save failure context to file
           with open("/tmp/failure_context.json", "w") as f:
