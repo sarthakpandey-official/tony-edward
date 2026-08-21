@@ -63,7 +63,7 @@ jobs:
   generate-hotfix:
     name: Generate AI hotfix
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20  # Nemotron Ultra 550B can take 5-10 min to generate a patch
     if: |
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'repository_dispatch' ||

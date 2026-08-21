@@ -46,7 +46,9 @@ import httpx
 # LLM configuration — Requesty router → Nvidia Neutron Ultra 550B
 LLM_API_URL = os.environ.get("PRIMARY_LLM_API_URL", "https://router.requesty.ai/v1")
 LLM_MODEL = os.environ.get("PRIMARY_LLM_MODEL", "nemotron-3-ultra-550b-a55b")
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))
+# Nemotron Ultra 550B is a huge model — it can take 3-5 min to generate a patch.
+# Bump timeout to 6 min and connect timeout to 30s.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "360"))
 
 PRIMARY_KEY = os.environ.get("PRIMARY_LLM_API_KEY", "")
 FALLBACK_KEY = os.environ.get("PRIMARY_LLM_API_KEY_FALLBACK", "")
@@ -58,7 +60,7 @@ _FAILOVER_STATUSES = {401, 402, 403, 429}
 def _call_llm(messages: list[dict], api_key: str) -> tuple[Optional[str], int, Optional[str]]:
     """Call LLM with one key. Returns (text, status_code, error)."""
     try:
-        with httpx.Client(timeout=LLM_TIMEOUT) as client:
+        with httpx.Client(timeout=httpx.Timeout(LLM_TIMEOUT, connect=30.0, read=LLM_TIMEOUT, write=60.0)) as client:
             resp = client.post(
                 f"{LLM_API_URL.rstrip('/')}/chat/completions",
                 headers={
