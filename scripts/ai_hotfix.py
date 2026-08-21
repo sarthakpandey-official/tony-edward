@@ -3,7 +3,7 @@
 scripts/ai_hotfix.py — AI Self-Healing Hotfix Generator.
 
 Receives a Sentry webhook payload (or test failure context), uses the
-Nvidia Neutron Ultra 550B LLM (via Requesty router) to generate a
+Nvidia Nemotron (free tier) LLM (via Requesty router) to generate a
 minimal code patch, and applies the patch to a hotfix branch.
 
 LLM Failover:
@@ -43,11 +43,14 @@ from typing import Optional
 
 import httpx
 
-# LLM configuration — Requesty router → Nvidia Neutron Ultra 550B
+# LLM configuration — Requesty router → Nvidia Nemotron (FREE tier)
+# NOTE: nemotron-3-ultra-550b-a55b is PAID. We use the free tier:
+# - nvidia/nemotron-3-super-120b-a12b (primary: 120B params, good for code patches)
+# - nvidia/nemotron-3-nano-30b-a3b (fallback: smaller, faster)
 LLM_API_URL = os.environ.get("PRIMARY_LLM_API_URL", "https://router.requesty.ai/v1")
-LLM_MODEL = os.environ.get("PRIMARY_LLM_MODEL", "nemotron-3-ultra-550b-a55b")
-# Nemotron Ultra 550B is a huge model — it can take 3-5 min to generate a patch.
-# Bump timeout to 6 min and connect timeout to 30s.
+LLM_MODEL = os.environ.get("PRIMARY_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+LLM_FALLBACK_MODEL = os.environ.get("PRIMARY_LLM_FALLBACK_MODEL", "nvidia/nemotron-3-nano-30b-a3b")
+# Free Nemotron models respond in 5-60s. Bump timeout to 6 min for safety.
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "360"))
 
 PRIMARY_KEY = os.environ.get("PRIMARY_LLM_API_KEY", "")
@@ -57,13 +60,14 @@ FALLBACK_KEY = os.environ.get("PRIMARY_LLM_API_KEY_FALLBACK", "")
 _FAILOVER_STATUSES = {401, 402, 403, 429}
 
 
-def _call_llm(messages: list[dict], api_key: str) -> tuple[Optional[str], int, Optional[str]]:
-    """Call LLM with one key. Returns (text, status_code, error).
+def _call_llm(messages: list[dict], api_key: str, model: str = None) -> tuple[Optional[str], int, Optional[str]]:
+    """Call LLM with one key + one model. Returns (text, status_code, error).
 
     Retries up to 3 times on transient network errors (RemoteProtocolError,
     ReadTimeout, ConnectError) before giving up.
     """
     import time as _time
+    model = model or LLM_MODEL
     transient_errors = ("RemoteProtocolError", "ReadTimeout", "ConnectError",
                         "ReadError", "ConnectionClosed", "PoolTimeout")
     last_err: Optional[str] = None
@@ -78,7 +82,7 @@ def _call_llm(messages: list[dict], api_key: str) -> tuple[Optional[str], int, O
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": LLM_MODEL,
+                        "model": model,
                         "messages": messages,
                         "temperature": 0.0,
                         "max_tokens": 4000,
@@ -106,22 +110,34 @@ def _call_llm(messages: list[dict], api_key: str) -> tuple[Optional[str], int, O
 def call_llm_with_failover(messages: list[dict]) -> tuple[Optional[str], Optional[str]]:
     """Try primary key first, fall back to fallback key on 401/402/403/429.
 
+    Also switches to a fallback (smaller, free) model when using the fallback key.
+
     Returns (text, error). On success, error is None.
     """
     keys_to_try = [k for k in [PRIMARY_KEY, FALLBACK_KEY] if k]
     if not keys_to_try:
         return None, "no_llm_api_key_configured"
 
+    # Pair each key with a model: primary key → primary model, fallback key → fallback (smaller) model
+    key_model_pairs = []
+    if PRIMARY_KEY:
+        key_model_pairs.append((PRIMARY_KEY, LLM_MODEL, "primary"))
+    if FALLBACK_KEY:
+        # Fallback key uses fallback model too (smaller = more reliable on free tier)
+        key_model_pairs.append((FALLBACK_KEY, LLM_FALLBACK_MODEL, "fallback"))
+
     last_err: Optional[str] = None
-    for i, key in enumerate(keys_to_try):
-        print(f"[hotfix] LLM attempt {i+1}/{len(keys_to_try)} with key ...{key[-6:]}", file=sys.stderr)
-        text, status, err = _call_llm(messages, key)
+    for i, (key, model, label) in enumerate(key_model_pairs):
+        # Use the model-specific messages — override the model in messages doesn't work,
+        # we pass it as a separate parameter via _call_llm
+        print(f"[hotfix] LLM attempt {i+1}/{len(key_model_pairs)} | key={label} model={model} key_suffix=...{key[-6:]}", file=sys.stderr)
+        text, status, err = _call_llm(messages, key, model)
         if text is not None:
             return text, None
         last_err = err
         # If failover status and we have more keys to try, retry
-        if status in _FAILOVER_STATUSES and i < len(keys_to_try) - 1:
-            print(f"[hotfix] status={status} — failing over to next key", file=sys.stderr)
+        if status in _FAILOVER_STATUSES and i < len(key_model_pairs) - 1:
+            print(f"[hotfix] status={status} — failing over to next key + smaller model", file=sys.stderr)
             continue
         # Non-failover error or last key — return the error
         return None, err or f"unknown_error_status_{status}"
