@@ -41,3 +41,4 @@ yt-dlp[default]>=2026.07.04
 # --- Dev / Test ---
 pytest>=8.0
 pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
