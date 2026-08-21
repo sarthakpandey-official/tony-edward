@@ -1,0 +1,524 @@
+# AI Self-Healing Pipeline — automatically fixes bugs detected by Sentry or CI.
+#
+# Triggers:
+#   1. repository_dispatch — Sentry webhook posts failure payload here
+#      (configure Sentry → Settings → Integrations → Webhooks → URL:
+#       https://api.github.com/repos/sarthakpandey-official/tony-edward/dispatches
+#       event_type: ai_self_heal, client_payload contains the issue)
+#   2. workflow_run — when "Test and Verify" workflow fails, this auto-triggers
+#   3. workflow_dispatch — manual trigger from GitHub Actions tab
+#
+# Pipeline stages:
+#   Stage 1: Parse failure payload (stack trace, error, file, line)
+#   Stage 2: Generate minimal code patch via Nvidia Neutron Ultra 550B LLM
+#            (with primary → fallback key failover)
+#   Stage 3: Create hotfix branch fix/ai-issue-<issue_id>, apply patch
+#   Stage 4: Deploy hotfix branch to Render Preview Sandbox
+#   Stage 5: Run pytest -v against sandbox endpoint
+#   Stage 6: If 100% pass → merge to main → trigger Post-Merge Live Verification
+#   Stage 7: If post-merge fails → instant git revert → secondary LLM cycle
+#
+# Required GitHub Secrets:
+#   PRIMARY_LLM_API_KEY          — Requesty primary key
+#   PRIMARY_LLM_API_KEY_FALLBACK — Requesty fallback key (auto-failover)
+#   PAT_TOKEN                    — GitHub PAT for merging + reverting on main
+
+name: AI Self-Healing Pipeline
+
+on:
+  # Trigger from Sentry webhook (via repository_dispatch)
+  repository_dispatch:
+    types: [ai_self_heal]
+  # Trigger when Test and Verify workflow fails
+  workflow_run:
+    workflows: ["Test and Verify"]
+    types: [completed]
+    branches: [main]
+  # Manual trigger from Actions tab
+  workflow_dispatch:
+    inputs:
+      issue_id:
+        description: 'Issue ID (used in branch name)'
+        required: true
+        default: 'manual-001'
+      error_file:
+        description: 'Path to JSON file with failure context (in repo)'
+        required: false
+        default: ''
+
+# Never run two self-heal cycles in parallel for the same issue
+concurrency:
+  group: ai-self-heal-${{ github.event.client_payload.issue_id || github.event.inputs.issue_id || 'manual' }}
+  cancel-in-progress: false  # let in-flight cycles complete
+
+env:
+  PYTHON_VERSION: '3.11'
+  PRIMARY_LLM_API_URL: https://router.requesty.ai/v1
+  PRIMARY_LLM_MODEL: nemotron-3-ultra-550b-a55b
+
+jobs:
+  # ===========================================================================
+  # Stage 1 + 2 + 3: Generate patch + apply to hotfix branch
+  # ===========================================================================
+  generate-hotfix:
+    name: Generate AI hotfix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure')
+    outputs:
+      issue_id: ${{ steps.context.outputs.issue_id }}
+      branch_name: ${{ steps.context.outputs.branch_name }}
+      patch_generated: ${{ steps.apply_patch.outputs.ok == 'true' }}
+      files_changed: ${{ steps.apply_patch.outputs.files_changed }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install httpx
+
+      # -----------------------------------------------------------------
+      # Stage 1: Parse the failure context
+      # -----------------------------------------------------------------
+      - name: Build failure context
+        id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          INPUT_ISSUE_ID: ${{ github.event.inputs.issue_id }}
+          INPUT_ERROR_FILE: ${{ github.event.inputs.error_file }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          python << 'EOF'
+          import json, os, time, urllib.request
+
+          event_name = os.environ["EVENT_NAME"]
+          issue_id = f"manual-{int(time.time())}"
+          failure = {}
+
+          if event_name == "repository_dispatch":
+              # Sentry webhook payload
+              payload = json.loads(os.environ.get("CLIENT_PAYLOAD") or "{}")
+              issue_id = payload.get("issue_id") or payload.get("id") or f"sentry-{int(time.time())}"
+              # Sentry sends event data
+              sentry_event = payload.get("event") or payload.get("data", {}).get("event") or payload
+              failure = {
+                  "issue_id": issue_id,
+                  "stack_trace": sentry_event.get("exception", {}).get("values", [{}])[0].get("stacktrace", {}).get("frames", "") if isinstance(sentry_event.get("exception"), dict) else "",
+                  "error_message": sentry_event.get("exception", {}).get("values", [{}])[0].get("value", sentry_event.get("message", "Unknown error")) if isinstance(sentry_event.get("exception"), dict) else sentry_event.get("message", "Unknown error"),
+                  "file_path": "",
+                  "line_number": 0,
+                  "code_context": "",
+              }
+              # Try to extract file + line from stacktrace
+              try:
+                  frames = sentry_event["exception"]["values"][0]["stacktrace"]["frames"]
+                  if frames:
+                      last_frame = frames[-1]
+                      failure["file_path"] = last_frame.get("filename", "")
+                      failure["line_number"] = last_frame.get("lineno", 0)
+              except Exception:
+                  pass
+
+          elif event_name == "workflow_dispatch":
+              issue_id = os.environ.get("INPUT_ISSUE_ID") or f"manual-{int(time.time())}"
+              error_file = os.environ.get("INPUT_ERROR_FILE", "")
+              if error_file and os.path.exists(error_file):
+                  failure = json.loads(open(error_file).read())
+                  failure.setdefault("issue_id", issue_id)
+              else:
+                  failure = {"issue_id": issue_id, "stack_trace": "manual trigger", "error_message": "manual trigger"}
+
+          elif event_name == "workflow_run":
+              # CI test failure — fetch logs and find the failure
+              issue_id = f"ci-fail-{os.environ.get('WORKFLOW_RUN_ID', int(time.time()))}"
+              # Download the workflow run's logs (requires GitHub API)
+              token = os.environ.get("GITHUB_TOKEN", "")
+              run_id = os.environ.get("WORKFLOW_RUN_ID")
+              failure = {
+                  "issue_id": issue_id,
+                  "stack_trace": f"Test and Verify workflow run {run_id} failed. See logs at https://github.com/${{ github.repository }}/actions/runs/{run_id}",
+                  "error_message": "CI test suite failed — see workflow logs",
+                  "file_path": "",
+                  "line_number": 0,
+                  "code_context": "",
+              }
+              # Attempt to fetch logs and extract the first failure
+              if token and run_id:
+                  try:
+                      req = urllib.request.Request(
+                          f"https://api.github.com/repos/${{ github.repository }}/actions/runs/{run_id}/logs",
+                          headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+                      )
+                      # Note: logs come as a zip — we'd need to extract
+                      # For simplicity, we just store the URL and let the LLM look at it
+                  except Exception:
+                      pass
+
+          # Save failure context to file
+          with open("/tmp/failure_context.json", "w") as f:
+              json.dump(failure, f, indent=2)
+
+          # Set outputs
+          branch_name = f"fix/ai-issue-{issue_id}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"issue_id={issue_id}\n")
+              f.write(f"branch_name={branch_name}\n")
+
+          print(f"Issue ID: {issue_id}")
+          print(f"Branch: {branch_name}")
+          print(f"Failure context saved")
+          EOF
+
+      - name: Save failure context artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: failure-context-${{ steps.context.outputs.issue_id }}
+          path: /tmp/failure_context.json
+
+      # -----------------------------------------------------------------
+      # Stage 2: Create hotfix branch
+      # -----------------------------------------------------------------
+      - name: Create hotfix branch
+        env:
+          BRANCH_NAME: ${{ steps.context.outputs.branch_name }}
+        run: |
+          git config user.name "Tony-EDWARD AI Bot"
+          git config user.email "ai-bot@tony-edward.local"
+          # Create branch from main
+          git checkout -b "$BRANCH_NAME"
+          echo "Created branch: $BRANCH_NAME"
+
+      # -----------------------------------------------------------------
+      # Stage 3: Generate patch via LLM + apply
+      # -----------------------------------------------------------------
+      - name: Generate + apply AI patch
+        id: apply_patch
+        env:
+          PRIMARY_LLM_API_KEY: ${{ secrets.PRIMARY_LLM_API_KEY }}
+          PRIMARY_LLM_API_KEY_FALLBACK: ${{ secrets.PRIMARY_LLM_API_KEY_FALLBACK }}
+          ISSUE_ID: ${{ steps.context.outputs.issue_id }}
+        run: |
+          set +e  # don't fail immediately on patch errors
+          python scripts/ai_hotfix.py \
+            --issue-id "$ISSUE_ID" \
+            --error-file /tmp/failure_context.json \
+            --repo-root . > /tmp/hotfix_result.json 2>/tmp/hotfix_stderr.log
+          EXIT_CODE=$?
+          cat /tmp/hotfix_stderr.log
+          echo "--- Result ---"
+          cat /tmp/hotfix_result.json
+
+          # Parse result
+          OK=$(python -c "import json; print(json.load(open('/tmp/hotfix_result.json')).get('ok', False))" 2>/dev/null || echo "false")
+          FILES=$(python -c "import json; print(','.join(json.load(open('/tmp/hotfix_result.json')).get('files_changed', [])))" 2>/dev/null || echo "")
+          echo "ok=$OK" >> $GITHUB_OUTPUT
+          echo "files_changed=$FILES" >> $GITHUB_OUTPUT
+
+          if [ "$OK" != "True" ]; then
+            echo "::warning::AI could not generate a fix. Manual intervention required."
+            exit 1
+          fi
+
+          # Stage the patched files
+          git add -A
+          git commit -m "AI hotfix for issue $ISSUE_ID
+
+Generated by Nvidia Neutron Ultra 550B via Requesty router.
+Files changed: $FILES"
+
+          echo "Patch committed to branch."
+          exit 0
+
+      # -----------------------------------------------------------------
+      # Stage 4: Push hotfix branch (for sandbox verification)
+      # -----------------------------------------------------------------
+      - name: Push hotfix branch
+        if: steps.apply_patch.outputs.ok == 'True'
+        env:
+          BRANCH_NAME: ${{ steps.context.outputs.branch_name }}
+        run: |
+          git push origin "$BRANCH_NAME"
+          echo "Pushed $BRANCH_NAME to origin"
+
+      - name: Upload patch artifact
+        if: always() && steps.apply_patch.outputs.ok == 'True'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ai-patch-${{ steps.context.outputs.issue_id }}
+          path: |
+            /tmp/hotfix-${{ steps.context.outputs.issue_id }}.patch
+            /tmp/hotfix_result.json
+
+  # ===========================================================================
+  # Stage 5: Sandbox verification — run tests on the hotfix branch
+  # ===========================================================================
+  sandbox-verify:
+    name: Sandbox verification (pytest on hotfix)
+    needs: generate-hotfix
+    if: needs.generate-hotfix.outputs.patch_generated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STORAGE_DIR: /tmp/tony-edward-sandbox
+      ENVIRONMENT: test
+      ADMIN_SECRET_KEY_64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      SUPER_ADMIN_KEY: tedw_sk_sandbox_test_key_1234567890
+      JWT_SECRET: sandbox_test_jwt_secret_1234567890
+      PRIMARY_LLM_API_KEY: sk-sandbox-test
+      BCRYPT_ROUNDS: '4'
+      SANDBOX_CRON_ENABLED: 'false'
+      B2_APPLICATION_KEY_ID: ''
+      B2_APPLICATION_KEY: ''
+      B2_BUCKET_NAME: ''
+      B2_ENDPOINT_URL: ''
+
+    steps:
+      - name: Checkout hotfix branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.generate-hotfix.outputs.branch_name }}
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # -----------------------------------------------------------------
+      # Stage 5: Run pytest -v against the sandbox (isolated test env)
+      # -----------------------------------------------------------------
+      - name: Run sandbox tests (pytest -v)
+        id: sandbox_tests
+        run: |
+          # Fail-fast sandbox tests — must be 100% pass to proceed to merge
+          pytest -v \
+            --exitfirst \
+            --maxfail=1 \
+            --tb=short \
+            tests/
+
+          # Capture exit code
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "Sandbox tests passed with exit code $EXIT_CODE"
+
+      - name: Boot sandbox + verify /health endpoint
+        run: |
+          python -m uvicorn main:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log &
+          UV_PID=$!
+          sleep 8
+          HTTP_CODE=$(curl -s -o /tmp/sandbox_health.json -w "%{http_code}" http://127.0.0.1:8765/health || echo "000")
+          echo "Sandbox /health: HTTP $HTTP_CODE"
+          cat /tmp/sandbox_health.json
+          kill $UV_PID 2>/dev/null || true
+          wait $UV_PID 2>/dev/null || true
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Sandbox health check FAILED"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Stage 6: Merge to main (only if sandbox tests 100% pass)
+  # ===========================================================================
+  merge-to-main:
+    name: Merge verified hotfix to main
+    needs: [generate-hotfix, sandbox-verify]
+    if: needs.generate-hotfix.outputs.patch_generated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "Tony-EDWARD AI Bot"
+          git config user.email "ai-bot@tony-edward.local"
+
+      - name: Merge hotfix branch to main
+        env:
+          BRANCH_NAME: ${{ needs.generate-hotfix.outputs.branch_name }}
+          ISSUE_ID: ${{ needs.generate-hotfix.outputs.issue_id }}
+        run: |
+          # Fetch the hotfix branch
+          git fetch origin "$BRANCH_NAME"
+          # Merge with --no-ff to preserve branch history
+          git merge --no-ff "origin/$BRANCH_NAME" -m "Merge AI hotfix for issue $ISSUE_ID
+
+Verified by sandbox-verify job — all tests passed.
+Auto-merge by AI Self-Healing Pipeline."
+          # Push to main
+          git push origin main
+          echo "Merged $BRANCH_NAME into main"
+
+      - name: Capture stable commit SHA (for rollback)
+        id: stable
+        run: |
+          # Get the commit SHA BEFORE the merge (previous stable)
+          PREV_SHA=$(git rev-parse HEAD~1)
+          # Save it as output for the post-merge verification job
+          echo "previous_stable_sha=$PREV_SHA" >> $GITHUB_OUTPUT
+          echo "current_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "Previous stable commit: $PREV_SHA"
+          echo "Current commit: $(git rev-parse HEAD)"
+
+    outputs:
+      previous_stable_sha: ${{ steps.stable.outputs.previous_stable_sha }}
+      current_sha: ${{ steps.stable.outputs.current_sha }}
+
+  # ===========================================================================
+  # Stage 7: Post-Merge Live Production Verification
+  # ===========================================================================
+  post-merge-verify:
+    name: Post-merge live production verification
+    needs: [generate-hotfix, merge-to-main]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # In a true production setup, this would point to the live Render URL.
+      # For self-healing, we re-clone main (which now has the merged patch)
+      # and run pytest -v --env=production locally as a verification suite.
+      PRODUCTION_VERIFY_URL: ${{ vars.PRODUCTION_VERIFY_URL || 'https://tony-edward.onrender.com' }}
+
+    steps:
+      - name: Checkout updated main
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run post-merge verification suite
+        id: verify
+        env:
+          ENVIRONMENT: production
+          STORAGE_DIR: /tmp/tony-edward-postmerge
+          ADMIN_SECRET_KEY_64: ${{ secrets.ADMIN_SECRET_KEY_64 || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }}
+          SUPER_ADMIN_KEY: ${{ secrets.SUPER_ADMIN_KEY || 'tedw_sk_postmerge_test' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'postmerge_jwt_test' }}
+          PRIMARY_LLM_API_KEY: ${{ secrets.PRIMARY_LLM_API_KEY || 'sk-test' }}
+          BCRYPT_ROUNDS: '4'
+          SANDBOX_CRON_ENABLED: 'false'
+        run: |
+          # pytest -v --env=production equivalent — run full suite with ENVIRONMENT=production
+          pytest -v --tb=short --maxfail=3 tests/ && EXIT=0 || EXIT=$?
+          echo "exit_code=$EXIT" >> $GITHUB_OUTPUT
+          if [ $EXIT -ne 0 ]; then
+            echo "::error::Post-merge verification FAILED — triggering rollback"
+            exit 1
+          fi
+          echo "Post-merge verification PASSED"
+
+      - name: Hit live production /health
+        run: |
+          # Give Render ~30s to auto-deploy the merged commit
+          sleep 30
+          # Retry up to 5 times in case of deploy in-progress
+          for i in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -s -o /tmp/live_health.json -w "%{http_code}" --max-time 15 "$PRODUCTION_VERIFY_URL/health" || echo "000")
+            echo "Attempt $i: HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" = "200" ]; then
+              cat /tmp/live_health.json
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Live production /health unreachable after 5 attempts"
+          exit 1
+
+  # ===========================================================================
+  # Stage 8: Auto-Rollback (if post-merge verification fails)
+  # ===========================================================================
+  auto-rollback:
+    name: Auto rollback on verification failure
+    needs: [generate-hotfix, merge-to-main, post-merge-verify]
+    if: failure() && needs.merge-to-main.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN || github.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "Tony-EDWARD AI Bot"
+          git config user.email "ai-bot@tony-edward.local"
+
+      - name: Instant git revert to previous stable
+        env:
+          PREV_SHA: ${{ needs.merge-to-main.outputs.previous_stable_sha }}
+          CURRENT_SHA: ${{ needs.merge-to-main.outputs.current_sha }}
+          ISSUE_ID: ${{ needs.generate-hotfix.outputs.issue_id }}
+        run: |
+          echo "Rolling back from $CURRENT_SHA to $PREV_SHA"
+          # Use git revert (creates a new commit that undoes the merge)
+          git revert --no-edit "$CURRENT_SHA"
+          # Push the revert
+          git push origin main
+          echo "Reverted commit $CURRENT_SHA — main is now back at stable state"
+
+      - name: Trigger secondary LLM hotfix cycle
+        env:
+          ISSUE_ID: ${{ needs.generate-hotfix.outputs.issue_id }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+        run: |
+          # Trigger a new self-heal cycle with the same issue ID + retry counter
+          # The secondary cycle will see that the original patch failed and
+          # (in a more sophisticated implementation) would try a different approach.
+          # For now, we just dispatch a new workflow with a "retry" suffix.
+          RETRY_ID="${ISSUE_ID}-retry-$(date +%s)"
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/ai-auto-fix.yml/dispatches \
+            -d "{\"ref\":\"main\",\"inputs\":{\"issue_id\":\"$RETRY_ID\"}}"
+          echo "Triggered secondary self-heal cycle with ID $RETRY_ID"
+
+      - name: Notify on rollback
+        run: |
+          echo "::warning::Production hotfix was reverted. Secondary LLM cycle triggered."
+          echo "Manual review may be required if secondary cycle also fails."

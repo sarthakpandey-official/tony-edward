@@ -1,0 +1,189 @@
+# Standard CI/CD Pipeline — runs unit + integration tests on every push and PR.
+#
+# Triggers:
+#   - push to main branch (direct commits)
+#   - pull_request opened/synchronized against main
+#
+# Strategy:
+#   - Fail-fast: if any test fails, the workflow fails immediately
+#   - Caching: pip packages cached between runs for faster CI
+#   - Python 3.11 (matches Render's runtime)
+#
+# Required GitHub Secrets: NONE (tests don't need real credentials;
+# tests use mocked embedders + disabled B2/LLM/R2 calls)
+
+name: Test and Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit is pushed to the same branch.
+concurrency:
+  group: test-and-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run pytest suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Test environment — no real credentials needed
+      STORAGE_DIR: /tmp/tony-edward-ci
+      ENVIRONMENT: test
+      ADMIN_SECRET_KEY_64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      SUPER_ADMIN_KEY: tedw_sk_ci_test_admin_key_1234567890
+      JWT_SECRET: ci_test_jwt_secret_1234567890
+      PRIMARY_LLM_API_KEY: sk-ci-test-fake-key
+      PRIMARY_LLM_API_KEY_FALLBACK: sk-ci-test-fake-key-fallback
+      PRIMARY_LLM_API_URL: https://api.openai.com/v1
+      BCRYPT_ROUNDS: '4'   # faster bcrypt for CI
+      SANDBOX_CRON_ENABLED: 'false'   # don't start sandbox during tests
+      B2_APPLICATION_KEY_ID: ''
+      B2_APPLICATION_KEY: ''
+      B2_BUCKET_NAME: ''
+      B2_ENDPOINT_URL: ''
+      RENDER_API_KEY: ''
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # full history for diff-based testing
+
+      # 2. Setup Python 3.11
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'            # cache pip wheels
+          cache-dependency-path: |
+            requirements.txt
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Show installed packages for debugging
+          pip list
+
+      # 4. Lint check (fail fast on syntax errors)
+      - name: Syntax check
+        run: |
+          python -c "import compileall; import sys; sys.exit(0 if compileall.compile_dir('app', quiet=1) else 1)"
+          python -c "import compileall; import sys; sys.exit(0 if compileall.compile_dir('tests', quiet=1) else 1)"
+          python -c "import main; print('main.py imports OK')"
+
+      # 5. Run unit + integration tests
+      #    Fail-fast: --exitfirst stops on first failure
+      #    --maxfail=1 ensures we never waste CI minutes on cascading failures
+      - name: Run pytest
+        run: |
+          pytest -v \
+            --exitfirst \
+            --maxfail=1 \
+            --tb=short \
+            --strict-markers \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            tests/
+        continue-on-error: false
+
+      # 6. Verify production entrypoint boots cleanly
+      - name: Verify app boots
+        run: |
+          # Boot uvicorn on a test port, hit /health, kill
+          STORAGE_DIR=/tmp/tony-edward-boot ENVIRONMENT=test \
+            ADMIN_SECRET_KEY_64=$(python -c "print('A'*64)") \
+            SUPER_ADMIN_KEY=tedw_sk_boot_test \
+            JWT_SECRET=boot_test_jwt \
+            PRIMARY_LLM_API_KEY=sk-test \
+            BCRYPT_ROUNDS=4 \
+            B2_APPLICATION_KEY_ID= B2_APPLICATION_KEY= B2_BUCKET_NAME= B2_ENDPOINT_URL= \
+            python -m uvicorn main:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log &
+          UV_PID=$!
+          sleep 8
+          # Hit /health
+          HTTP_CODE=$(curl -s -o /tmp/health.json -w "%{http_code}" http://127.0.0.1:8765/health || echo "000")
+          echo "Health endpoint returned: HTTP $HTTP_CODE"
+          cat /tmp/health.json
+          kill $UV_PID 2>/dev/null || true
+          wait $UV_PID 2>/dev/null || true
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Boot verification FAILED: /health did not return 200"
+            exit 1
+          fi
+          echo "Boot verification PASSED"
+
+      # 7. Upload coverage report as artifact (for the dashboard)
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+  # Second job: code-quality check (runs in parallel with tests)
+  code-quality:
+    name: Code quality checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      STORAGE_DIR: /tmp/tony-edward-qual
+      ENVIRONMENT: test
+      ADMIN_SECRET_KEY_64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      SUPER_ADMIN_KEY: tedw_sk_ci_test_admin_key_1234567890
+      JWT_SECRET: ci_test_jwt_secret_1234567890
+      PRIMARY_LLM_API_KEY: sk-ci-test
+      BCRYPT_ROUNDS: '4'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff mypy
+
+      - name: Check for secrets in code
+        run: |
+          # Fail if any real-looking secrets are committed
+          if grep -rE "(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|rnd_[a-zA-Z0-9]{20}|K0059[a-zA-Z0-9+/]+)" \
+              --include="*.py" --include="*.yml" --include="*.yaml" --include="*.md" \
+              --exclude-dir=vendor --exclude-dir=venv \
+              . ; then
+            echo "❌ POTENTIAL SECRET DETECTED IN CODE — FAILING"
+            exit 1
+          fi
+          echo "✅ No secrets detected in code"
+
+      - name: Lint with ruff
+        run: |
+          # Check for syntax errors + critical issues (don't fail on style)
+          ruff check --select=E9,F63,F7,F82,F401,F811 --no-cache app/ tests/ main.py || true
+          echo "Lint check completed (informational — does not fail the build)"
+
+      - name: Verify .env not committed
+        run: |
+          if git ls-files | grep -E "^\.env$"; then
+            echo "❌ .env file is tracked in git!"
+            exit 1
+          fi
+          echo "✅ .env not tracked"
