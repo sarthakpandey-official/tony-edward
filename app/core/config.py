@@ -45,6 +45,11 @@ class Settings:
     host: str = "0.0.0.0"
     log_level: str = "INFO"
 
+    # --- Sentry.io monitoring ---
+    # Default DSN points to the user's Sentry project. Override via env var SENTRY_DSN.
+    sentry_dsn: str = "https://bbbd4bcaa47ee5b0276c5372360ae8f3@o4511948811534336.ingest.us.sentry.io/4511948815794176"
+    sentry_traces_sample_rate: float = 0.1
+
     # --- Security ---
     # `super_admin_key` is the legacy bearer used by v1 API + WebSocket terminal.
     # `admin_secret_key_64` is the strict 64-char key for the Web Admin UI.
@@ -184,6 +189,8 @@ def get_settings() -> Settings:
         port=int(_env("PORT", "8000")),
         host=_env("HOST", "0.0.0.0"),
         log_level=_env("LOG_LEVEL", "INFO"),
+        sentry_dsn=_env("SENTRY_DSN", "https://bbbd4bcaa47ee5b0276c5372360ae8f3@o4511948811534336.ingest.us.sentry.io/4511948815794176"),
+        sentry_traces_sample_rate=float(_env("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
         super_admin_key=super_admin_key,
         admin_secret_key_64=admin_secret_key_64,
         admin_secret_key_min_len=int(_env("ADMIN_SECRET_KEY_MIN_LEN", "64")),

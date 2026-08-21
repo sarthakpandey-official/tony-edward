@@ -2,7 +2,8 @@
 main.py — Tony-EDWARD entrypoint (v3 — Backblaze B2 + admin dashboard).
 
 Boots FastAPI, wires all v1 routes + admin dashboard, installs the zero-log
-policy, starts the auto-purge + sandbox cron background tasks.
+policy, starts the auto-purge + sandbox cron background tasks, and initializes
+Sentry.io for error monitoring + performance tracing.
 """
 from __future__ import annotations
 
@@ -14,6 +15,10 @@ import time
 from contextlib import asynccontextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +40,162 @@ logging.basicConfig(
 logger = logging.getLogger("tony_edward.main")
 
 install_zero_log_policy()
+
+
+# ---------------------------------------------------------------------------
+# Sentry.io initialization — error monitoring + performance tracing
+# ---------------------------------------------------------------------------
+
+# Headers / params to scrub before sending any data to Sentry servers.
+# Even though Zero-Log Policy keeps them out of our own logs, we MUST
+# also scrub them at the Sentry boundary so they never leave our process.
+_SENSITIVE_HEADER_KEYS = {
+    "authorization", "x-api-key", "x-tony-edward-llm-key", "x-tony-edward-llm-url",
+    "cookie", "set-cookie", "x-auth-token", "x-admin-token", "admin_secret_key_64",
+    "super_admin_key", "jwt_secret", "primary_llm_api_key", "primary_llm_api_key_fallback",
+    "b2_application_key", "b2_application_key_id", "render_api_key",
+}
+_SENSITIVE_PARAM_KEYS = {
+    "admin_key", "password", "secret", "token", "api_key", "apikey", "byo_api_key",
+    "byo_api_url", "raw_token", "key", "private_key",
+}
+
+
+def _scrub_headers(headers):
+    """Replace sensitive header values with [Filtered] before sending to Sentry."""
+    if not isinstance(headers, dict):
+        return headers
+    scrubbed = {}
+    for k, v in headers.items():
+        if k.lower() in _SENSITIVE_HEADER_KEYS:
+            scrubbed[k] = "[Filtered]"
+        else:
+            scrubbed[k] = v
+    return scrubbed
+
+
+def _scrub_params(params):
+    """Replace sensitive request parameter values with [Filtered]."""
+    if not isinstance(params, dict):
+        return params
+    scrubbed = {}
+    for k, v in params.items():
+        key_lower = k.lower() if isinstance(k, str) else str(k).lower()
+        if key_lower in _SENSITIVE_PARAM_KEYS or any(s in key_lower for s in _SENSITIVE_PARAM_KEYS):
+            scrubbed[k] = "[Filtered]"
+        else:
+            scrubbed[k] = v
+    return scrubbed
+
+
+def _sentry_before_send(event, hint):
+    """Filter callback for Sentry: drop 401/403 events, scrub sensitive data.
+
+    - HTTP 401 (Unauthorized) and 403 (Forbidden) are routine auth failures,
+      not bugs. We drop them so they don't pollute Sentry.
+    - For everything else, scrub sensitive headers + params before sending.
+    """
+    try:
+        # Drop 401/403 events entirely
+        exc_info = hint.get("exc_info") if hint else None
+        if exc_info:
+            from starlette.exceptions import HTTPException as StarletteHTTPException
+            from fastapi import HTTPException as FastAPIHTTPException
+            for exc in exc_info:
+                exc_value = exc[1] if isinstance(exc, tuple) else exc
+                if isinstance(exc_value, (FastAPIHTTPException, StarletteHTTPException)):
+                    if getattr(exc_value, "status_code", 0) in (401, 403):
+                        return None
+
+        # Also check the event-level 'exception' values
+        exceptions = event.get("exception", {}).get("values", [])
+        for ex in exceptions:
+            type_str = (ex.get("type") or "").lower()
+            if "httpexception" in type_str or "http_exception" in type_str:
+                value_str = (ex.get("value") or "").lower()
+                if "401" in value_str or "403" in value_str:
+                    return None
+
+        # Scrub request headers + params
+        request = event.get("request", {})
+        if request:
+            request["headers"] = _scrub_headers(request.get("headers"))
+            request["cookies"] = "[Filtered]" if request.get("cookies") else request.get("cookies")
+            request["query_string"] = "[Filtered]" if request.get("query_string") else request.get("query_string")
+            if "data" in request:
+                request["data"] = "[Filtered]"
+
+        # Scrub extra contexts that may contain headers
+        contexts = event.get("contexts", {})
+        if "trace" in contexts and isinstance(contexts["trace"], dict):
+            contexts["trace"].pop("headers", None)
+
+        # Scrub breadcrumbs that may have captured headers
+        for crumb in event.get("breadcrumbs", {}).get("values", []):
+            if isinstance(crumb.get("data"), dict):
+                crumb["data"] = _scrub_params(crumb["data"])
+
+        # Scrub 'extra' top-level
+        if "extra" in event and isinstance(event["extra"], dict):
+            event["extra"] = _scrub_params(event["extra"])
+
+        return event
+    except Exception:
+        # If our scrubber crashes, drop the event rather than leak data
+        return None
+
+
+def _sentry_before_send_transaction(event, hint):
+    """Filter callback for Sentry transactions: scrub sensitive headers/params.
+
+    Transactions contain request data for performance traces. We must
+    scrub Authorization, X-API-Key, Cookie etc. before they leave.
+    """
+    try:
+        request = event.get("request", {})
+        if request:
+            request["headers"] = _scrub_headers(request.get("headers"))
+            request["cookies"] = "[Filtered]" if request.get("cookies") else request.get("cookies")
+            if "data" in request:
+                request["data"] = "[Filtered]"
+
+        tags = event.get("tags", {})
+        if isinstance(tags, dict):
+            event["tags"] = _scrub_params(tags)
+
+        if "extra" in event and isinstance(event["extra"], dict):
+            event["extra"] = _scrub_params(event["extra"])
+
+        return event
+    except Exception:
+        return None
+
+
+def init_sentry(settings):
+    """Initialize Sentry SDK with FastAPI integration + data sanitization."""
+    if not settings.sentry_dsn:
+        logger.info("sentry_disabled_no_dsn")
+        return
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        send_default_pii=False,  # NEVER send PII
+        attach_stacktrace=True,
+        max_breadcrumbs=50,
+        integrations=[
+            StarletteIntegration(),
+            FastApiIntegration(),
+        ],
+        before_send=_sentry_before_send,
+        before_send_transaction=_sentry_before_send_transaction,
+    )
+    logger.info("sentry_initialized env=%s traces_sample_rate=%.2f",
+                settings.environment, settings.sentry_traces_sample_rate)
+
+
+# Initialize Sentry BEFORE lifespan — errors during boot will be captured
+init_sentry(get_settings())
 
 
 @asynccontextmanager
