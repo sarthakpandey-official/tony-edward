@@ -307,7 +307,7 @@
 <div id="toast"></div>
 
 <script>
-const AUTHED = __AUTHENTICATED__ === "true";
+const AUTHED = __AUTHENTICATED__;
 if (AUTHED) {
   document.getElementById("login").style.display = "none";
   document.getElementById("dashboard").style.display = "block";
