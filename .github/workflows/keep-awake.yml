@@ -1,0 +1,78 @@
+# GitHub Actions workflow — keep Render free service awake by pinging every 5 minutes.
+#
+# Render's free plan puts web services to sleep after 15 minutes of inactivity.
+# This workflow pings the /health endpoint every 5 minutes to prevent that,
+# so the admin dashboard and API are always responsive.
+#
+# The Render service URL is stored as a GitHub secret: RENDER_HEALTH_URL
+# (set in repo Settings → Secrets and variables → Actions)
+
+name: Keep Render Awake
+
+on:
+  schedule:
+    # Run every 5 minutes, 24/7.
+    # Note: GitHub Actions scheduled workflows can be delayed by a few minutes
+    # during high-load periods. The 5-minute interval gives enough margin.
+    - cron: '*/5 * * * *'
+  # Also allow manual trigger from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping Render health endpoint
+        env:
+          # RENDER_HEALTH_URL should be: https://tony-edward.onrender.com/health
+          RENDER_HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
+        run: |
+          if [ -z "$RENDER_HEALTH_URL" ]; then
+            echo "ERROR: RENDER_HEALTH_URL secret is not set."
+            echo "Go to repo Settings → Secrets and variables → Actions → New repository secret"
+            echo "Name: RENDER_HEALTH_URL"
+            echo "Value: https://tony-edward.onrender.com/health"
+            exit 1
+          fi
+
+          echo "Pinging $RENDER_HEALTH_URL ..."
+          # Try up to 3 times (in case of transient network errors)
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s -o /tmp/health_response.json -w "%{http_code}" \
+              --max-time 30 \
+              --connect-timeout 15 \
+              "$RENDER_HEALTH_URL" || echo "000")
+
+            echo "Attempt $attempt: HTTP $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "SUCCESS — service is awake."
+              cat /tmp/health_response.json
+              echo ""
+              exit 0
+            fi
+
+            # If service is sleeping, Render takes ~30s to wake up.
+            # Wait 35 seconds and retry.
+            if [ "$attempt" -lt 3 ]; then
+              echo "Service may be sleeping. Waiting 35s before retry..."
+              sleep 35
+            fi
+          done
+
+          echo "FAILED after 3 attempts."
+          exit 1
+
+      - name: Ping admin dashboard (bonus — warms up the dashboard too)
+        env:
+          RENDER_DASHBOARD_URL: ${{ secrets.RENDER_HEALTH_URL }}
+        run: |
+          # Strip /health from the URL to get the base URL
+          BASE_URL="${RENDER_DASHBOARD_URL%/health}"
+          DASHBOARD_URL="${BASE_URL}/admin/"
+          echo "Also pinging $DASHBOARD_URL ..."
+          curl -s -o /dev/null -w "Dashboard: HTTP %{http_code}\n" \
+            --max-time 30 \
+            --connect-timeout 15 \
+            "$DASHBOARD_URL" || true

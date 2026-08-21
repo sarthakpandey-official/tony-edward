@@ -7,3 +7,10 @@ storage/sandbox_runs/
 storage/exports/
 tests/__pycache__/
 vendor/
+
+# NEVER commit real credentials
+.env
+.env.local
+.env.production
+*.key
+*.pem
