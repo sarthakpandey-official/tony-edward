@@ -76,13 +76,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN || github.token }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -187,7 +187,7 @@ jobs:
           EOF
 
       - name: Save failure context artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: failure-context-${{ steps.context.outputs.issue_id }}
           path: /tmp/failure_context.json
@@ -259,7 +259,7 @@ Files changed: $FILES"
 
       - name: Upload patch artifact
         if: always() && steps.apply_patch.outputs.ok == 'True'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ai-patch-${{ steps.context.outputs.issue_id }}
           path: |
@@ -291,14 +291,14 @@ Files changed: $FILES"
 
     steps:
       - name: Checkout hotfix branch
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.generate-hotfix.outputs.branch_name }}
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN || github.token }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -352,7 +352,7 @@ Files changed: $FILES"
     timeout-minutes: 5
     steps:
       - name: Checkout main
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
@@ -410,14 +410,14 @@ Auto-merge by AI Self-Healing Pipeline."
 
     steps:
       - name: Checkout updated main
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN || github.token }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -476,7 +476,7 @@ Auto-merge by AI Self-Healing Pipeline."
     timeout-minutes: 5
     steps:
       - name: Checkout main
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
