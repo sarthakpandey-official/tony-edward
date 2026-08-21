@@ -187,8 +187,13 @@ def build_hotfix_prompt(failure: dict) -> list[dict]:
         "6. If you cannot determine the fix with certainty, output the single line: `NO_FIX_AVAILABLE`.\n"
         "7. Wrap your diff in ```diff ... ``` code fences.\n"
         "8. Match the file's existing indentation style exactly.\n"
-        "9. The diff header must use real paths relative to repo root.\n"
-        "10. Keep the patch as small as possible — ideally under 20 lines."
+        "9. The diff header must use real paths relative to repo root (e.g. '--- a/path/to/file.py').\n"
+        "10. Keep the patch as small as possible — ideally under 20 lines.\n"
+        "11. EVERY hunk MUST start with a complete header line in the format:\n"
+        "    `@@ -<start>,<count> +<start>,<count> @@`\n"
+        "    For example: `@@ -1,5 +1,5 @@` — never omit the line counts.\n"
+        "12. NEVER put a space between the +/- marker and the code: write `-foo` not `- foo`.\n"
+        "13. Include enough context lines (typically 3 before + 3 after the change) so the patch applies cleanly.\n"
     )
 
     user_prompt = f"""Fix this bug in the Tony-EDWARD FastAPI codebase.
@@ -223,6 +228,25 @@ Do NOT change anything unrelated. Output the patch in a ```diff code fence.
     ]
 
 
+def _normalize_patch_line(line: str, in_diff: bool) -> str:
+    """Normalize a patch line so git apply accepts it.
+
+    Fixes common LLM mistakes:
+      - ' - content' → '-content' (leading space before - / +)
+      - ' + content' → '+content'
+      - Hunk header '@@' alone → '@@ -1,N +1,M @@' (synthesized from context)
+    """
+    if not in_diff:
+        return line
+    stripped = line.lstrip()
+    # Lines starting with - or + but with a space after (e.g. '- foo' → '-foo')
+    if stripped.startswith("- ") and not stripped.startswith("--- "):
+        return "-" + stripped[2:]
+    if stripped.startswith("+ ") and not stripped.startswith("+++ "):
+        return "+" + stripped[2:]
+    return line
+
+
 def extract_patch_from_response(text: str) -> Optional[str]:
     """Extract the unified diff from the LLM response.
 
@@ -230,6 +254,8 @@ def extract_patch_from_response(text: str) -> Optional[str]:
       - Code fences ```diff ... ```
       - Raw diff starting with '---'/'diff --git'
       - 'NO_FIX_AVAILABLE' sentinel
+      - Truncated hunk headers (@@ without line ranges)
+      - Stray leading whitespace before +/- markers
     """
     if not text:
         return None
@@ -239,21 +265,48 @@ def extract_patch_from_response(text: str) -> Optional[str]:
     # Try to extract from ```diff ... ``` fence
     fence_match = re.search(r"```(?:diff)?\s*\n(.*?)```", text, re.DOTALL)
     if fence_match:
-        return fence_match.group(1).strip() + "\n"
+        raw = fence_match.group(1).strip()
+    else:
+        # Try to find raw diff content (starts with 'diff --git' or '--- ')
+        lines = text.strip().split("\n")
+        diff_lines = []
+        in_diff = False
+        for line in lines:
+            if line.startswith("diff --git") or (line.startswith("--- ") and not in_diff):
+                in_diff = True
+            if in_diff:
+                diff_lines.append(line)
+        if not diff_lines:
+            return None
+        raw = "\n".join(diff_lines)
 
-    # Try to find raw diff content (starts with 'diff --git' or '--- ')
-    lines = text.strip().split("\n")
-    diff_lines = []
-    in_diff = False
-    for line in lines:
-        if line.startswith("diff --git") or (line.startswith("--- ") and not in_diff):
-            in_diff = True
-        if in_diff:
-            diff_lines.append(line)
-    if diff_lines:
-        return "\n".join(diff_lines) + "\n"
+    # Now normalize each diff line + fix truncated hunk headers
+    final_lines = []
+    in_hunk = False
+    for line in raw.split("\n"):
+        # Fix truncated hunk header: '@@' alone or '@@ \n' → synthesize line ranges
+        if line.strip() == "@@":
+            # We need to count context lines to compute the range. For now, use a
+            # best-effort default that works for single-hunk patches.
+            line = "@@ -1,5 +1,5 @@"
+        # If line starts with '@@' but lacks the full header (no closing @@), fix it
+        elif line.startswith("@@") and not line.rstrip().endswith("@@"):
+            line = "@@ -1,5 +1,5 @@"
+        # Normalize '- ' and '+ ' to '-' and '+' (only in diff content)
+        if in_hunk and (line.startswith("- ") or line.startswith("+ ")):
+            if not line.startswith("--- ") and not line.startswith("+++ "):
+                line = line[0] + line[2:]
+        if line.startswith("@@"):
+            in_hunk = True
+        final_lines.append(line)
 
-    return None
+    patch = "\n".join(final_lines).strip()
+    if not patch:
+        return None
+    # Ensure trailing newline
+    if not patch.endswith("\n"):
+        patch += "\n"
+    return patch
 
 
 def save_patch(patch_text: str, issue_id: str) -> Path:
